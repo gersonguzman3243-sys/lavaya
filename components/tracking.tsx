@@ -18,6 +18,7 @@ import {
 } from "@/components/widgets";
 import { customerHeadline, serviceLabel } from "@/lib/catalog";
 import { formatDateTime, mxn } from "@/lib/format";
+import { paymentStatusLabel } from "@/lib/payment-label";
 import type { LaundryPlace, Order, PublicUser } from "@/lib/types";
 
 export function Tracking({
@@ -25,12 +26,14 @@ export function Tracking({
   me,
   people,
   laundry,
+  mercadoPago,
   onBack,
 }: {
   order: Order;
   me: PublicUser;
   people: PublicUser[];
   laundry: LaundryPlace;
+  mercadoPago: boolean;
   onBack: () => void;
 }) {
   const [chat, setChat] = useState(false);
@@ -53,6 +56,31 @@ export function Tracking({
       glyph: "🛵",
       label: order.courierName ?? "Recolector",
     });
+  }
+
+  async function pay(method: "efectivo" | "mercadopago") {
+    setBusy(true);
+    try {
+      const result = await api<{
+        mode: "efectivo" | "demo" | "mercadopago";
+        initPoint?: string;
+        sandboxInitPoint?: string;
+      }>("/api/payments/checkout", { orderId: order.id, method });
+      if (result.mode === "demo") {
+        toast.success("Modo demo: el pago quedó simulado. No hubo cargo.");
+        return;
+      }
+      if (result.mode === "efectivo") {
+        toast.success("Pagarás en efectivo al recibir la ropa.");
+        return;
+      }
+      const next = result.sandboxInitPoint || result.initPoint;
+      if (next) window.location.href = next;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No pudimos preparar el pago.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function act(type: string, extra?: Record<string, unknown>) {
@@ -101,6 +129,12 @@ export function Tracking({
         ) : (
           <p className="text-sm text-muted-foreground">En cuanto alguien tome el viaje, lo verás en el mapa.</p>
         )}
+        {moving && order.courierLat != null ? (
+          <p className="rounded-2xl bg-white px-3 py-2 text-sm">
+            {order.etaMinutes ? `Llega en unos ${order.etaMinutes} min. ` : ""}
+            {order.locationMode === "gps" ? "Ubicación en vivo del recolector." : "Recorrido estimado: no hay GPS del teléfono."}
+          </p>
+        ) : null}
         {order.scheduledFor ? (
           <p className="rounded-2xl bg-cream px-3 py-2 text-sm">Programada para {formatDateTime(order.scheduledFor)}.</p>
         ) : null}
@@ -138,15 +172,11 @@ export function Tracking({
           title={order.finalPrice ? "Precio final" : "Precio estimado"}
           caption={
             order.finalPrice
-              ? "Pago simulado. El total usa el peso real, las mismas tarifas del pedido y los dos tramos de distancia."
+              ? "El total usa el peso real, las tarifas de este pedido y los dos tramos de distancia."
               : "Todavía es un estimado. El final sale cuando el taller pesa la ropa."
           }
         />
-        {order.status === "pesado" && !order.customerAccepted && order.finalPrice ? (
-          <Button type="button" size="lg" className="w-full" disabled={busy} onClick={() => void act("accept_price")}>
-            Aceptar cantidad y precio · {mxn(order.finalPrice.total)}
-          </Button>
-        ) : null}
+        {order.finalPrice ? <PaymentPanel order={order} busy={busy} mercadoPago={mercadoPago} onPay={pay} /> : null}
         {order.customerAccepted && order.status === "pesado" ? (
           <p className="rounded-2xl bg-secondary px-3 py-2 text-sm">Aceptaste el total. El taller ya puede empezar a lavar.</p>
         ) : null}
@@ -186,5 +216,49 @@ export function Tracking({
       ) : null}
       <ChatSheet order={order} userId={me.id} open={chat} onOpenChange={setChat} />
     </div>
+  );
+}
+
+function PaymentPanel({
+  order,
+  busy,
+  mercadoPago,
+  onPay,
+}: {
+  order: Order;
+  busy: boolean;
+  mercadoPago: boolean;
+  onPay: (method: "efectivo" | "mercadopago") => void;
+}) {
+  const waiting = order.paymentStatus === "pendiente" || order.paymentStatus === "rechazado";
+  const canChoose = Boolean(order.finalPrice) && order.status !== "cancelado" && waiting;
+  return (
+    <section className="space-y-3 rounded-3xl bg-white p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="font-display text-2xl">Pago</h3>
+        <span className="rounded-full bg-cream px-3 py-1 text-xs font-bold">{paymentStatusLabel(order.paymentStatus)}</span>
+      </div>
+      {order.paymentStatus === "demo" ? (
+        <p className="text-sm">Modo demo: no hay llaves de Mercado Pago, así que este cobro es simulado y no sale de tu tarjeta.</p>
+      ) : null}
+      {order.paymentStatus === "efectivo" ? <p className="text-sm">Pagas en efectivo cuando te entreguen la ropa limpia.</p> : null}
+      {order.paymentStatus === "aprobado" ? <p className="text-sm">Mercado Pago confirmó el cobro de {mxn(order.finalPrice?.total ?? order.estimate.total)}.</p> : null}
+      {order.paymentStatus === "en_proceso" ? <p className="text-sm">El pago sigue en proceso (puede ser OXXO o una transferencia).</p> : null}
+      {canChoose ? (
+        <>
+          <p className="text-sm text-muted-foreground">
+            {mercadoPago
+              ? "Checkout Pro de Mercado Pago, en modo prueba: tarjeta, OXXO o transferencia."
+              : "Sin credenciales de Mercado Pago el botón deja el pedido en modo demo."}
+          </p>
+          <Button type="button" size="lg" className="w-full" disabled={busy} onClick={() => onPay("mercadopago")}>
+            Pagar con Mercado Pago · {mxn(order.finalPrice?.total ?? 0)}
+          </Button>
+          <Button type="button" size="lg" variant="outline" className="w-full" disabled={busy} onClick={() => onPay("efectivo")}>
+            Efectivo al recibir
+          </Button>
+        </>
+      ) : null}
+    </section>
   );
 }

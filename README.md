@@ -13,13 +13,23 @@ La interfaz, los textos y esta guía están en español de México. Los precios 
 - **PWA**: se puede instalar desde el navegador.
 - **Capacitor** envuelve esa misma web en un proyecto Android. El APK abre LavaYa desde la dirección del servidor, así el teléfono no queda amarrado a `localhost`.
 
-No hay base de datos externa ni cobros reales. Los pedidos viven en un JSON (`LAVAYA_DATA_DIR/db.json`; en local, `data/db.json`). Las fotos de la ropa se guardan en `uploads` dentro de ese mismo directorio. Si el archivo no existe, al arrancar se siembran solas las cuentas ana, luis y rosa (`@lavaya.mx`, contraseña `lavaya123`).
+Los pedidos viven en Postgres si defines `DATABASE_URL`. Si no viene, se usa un JSON (`LAVAYA_DATA_DIR/db.json`; en local, `data/db.json`). Las fotos siguen en `uploads` dentro de ese directorio: el disco gratis de Render es efímero, así que las fotos se pierden al reiniciar aunque el JSON de pedidos esté en Postgres. Si el almacén está vacío, al arrancar se siembran ana, luis, rosa y la administración (`@lavaya.mx`, contraseña `lavaya123`).
 
 ## Render
 
 El servicio es Docker (`render.yaml`: tipo web, runtime docker, plan free). Render inyecta `PORT` (en el plan gratis suele ser 10000). El proceso escucha en `process.env.PORT` o, si no viene, en **7860**, siempre en `0.0.0.0`. La comprobación de salud es `GET /api/health`.
 
-El plan gratis tiene disco efímero: al reiniciar o redesplegar se borra `/home/user/data`. El arranque vuelve a sembrar la demo. No hace falta un volumen.
+El plan gratis tiene disco efímero: al reiniciar o redesplegar se borra `/home/user/data`. Sin `DATABASE_URL` el arranque vuelve a sembrar la demo. Con Postgres los registros, pedidos y aprobaciones se quedan.
+
+## Postgres
+
+Cualquier Postgres con una URL sirve: el Postgres gratis de Render o [Neon](https://neon.tech). La app crea sola la tabla `lavaya_state` (un documento JSON) la primera vez que arranca.
+
+1. Crea la base y copia la connection string **externa** (en Render, la que no dice Internal, si el servicio web y la base no están en el mismo private network; si sí lo están, usa la Internal).
+2. En el servicio web pon `DATABASE_URL` con esa URL. No la subas al repositorio.
+3. Redeploy. `GET /api/health` responde `db: "postgres"` cuando conectó, o `db: "json"` si la variable no está.
+
+Si la variable no está, no se intenta conectar y se usa el archivo.
 
 La URL prevista es [https://lavaya.onrender.com](https://lavaya.onrender.com). El proxy termina HTTPS. La app usa rutas relativas (`/api/...`, `/cliente`, eventos en `/api/events`), así que el navegador se queda en ese origen. El chat no usa WebSocket: son peticiones HTTP y SSE. La cookie se marca `Secure` cuando llega `X-Forwarded-Proto: https`.
 
@@ -59,6 +69,7 @@ Las tres usan la contraseña `lavaya123`.
 | Cliente | Ana García | ana@lavaya.mx |
 | Recolector | Luis Hernández | luis@lavaya.mx |
 | Lavandería | Rosa Méndez | rosa@lavaya.mx |
+| Administración | Administración LavaYa | admin@lavaya.mx |
 
 También existe Carlos Ruiz (`carlos@lavaya.mx`, misma contraseña) con una recolección programada en la Condesa, para que el recolector vea un viaje disponible al entrar.
 
@@ -94,7 +105,45 @@ Los extras por prenda nacen en $0: la prenda solo se cuenta y el dinero va por k
 
 **Distancia.** Primero se pide la ruta en coche al servicio público de OpenStreetMap [OSRM](https://router.project-osrm.org) (`router.project-osrm.org`). Si responde, los kilómetros son por calles y el mapa dibuja esa ruta. Si no responde a tiempo, se usa la línea recta (haversine) multiplicada por **1.35** para aproximar el recorrido urbano. El desglose dice cuál de las dos se usó. Los kilómetros se redondean a un decimal para que la cuenta coincida con lo que se lee.
 
-El pago es simulado: se muestra el monto y no hay cargo real.
+## Cuentas nuevas
+
+En la portada, **Crear cuenta** abre el registro:
+
+- **Cliente**: nombre, correo, contraseña y teléfono. Entra de inmediato.
+- **Lavandería**: nombre del negocio, dirección, pin en el mapa, teléfono y horario. Puede poner su precio de lavado normal; si no, usa $12/kg y $5 por km. Queda **pendiente**.
+- **Recolector**: nombre, teléfono, placa y, si quiere, foto de INE o licencia. Queda **pendiente**.
+
+Entra como `admin@lavaya.mx` para aprobar, rechazar o suspender. Solo un taller aprobado y cercano recibe el pedido. Solo un recolector aprobado ve viajes a menos de 18 km y puede aceptarlos.
+
+## Pagos
+
+Cuando el taller pesa la ropa, el cliente elige:
+
+- **Mercado Pago** (Checkout Pro: tarjeta, OXXO o transferencia), o
+- **Efectivo al recibir**.
+
+El estado se ve en el pedido del cliente y en el escritorio de la lavandería.
+
+Variables:
+
+| Variable | Para qué |
+| --- | --- |
+| `MP_ACCESS_TOKEN` | Access token de **prueba**. Empieza con `TEST-`. Sin ella, Mercado Pago queda en **modo demo** (no hay cargo). |
+| `MP_PUBLIC_KEY` | Public key de prueba, `TEST-`. La app arranca igual si falta. |
+| `APP_URL` | Origen público, `https://lavaya.onrender.com`. Se usa en `back_urls` y en el webhook. |
+| `DATABASE_URL` | Postgres opcional. Ver arriba. |
+
+Credenciales de prueba de Mercado Pago (México):
+
+1. Entra a [Tus integraciones](https://www.mercadopago.com.mx/developers/panel/app) con una cuenta de Mercado Pago.
+2. Crea una aplicación y abre **Credenciales de prueba** (no las de producción).
+3. Copia el Access Token y la Public Key a `MP_ACCESS_TOKEN` y `MP_PUBLIC_KEY`.
+4. En la aplicación, la URL de notificaciones puede quedar vacía: LavaYa manda `notification_url` al crear la preferencia (`/api/payments/webhook`).
+5. Paga con un [usuario de prueba](https://www.mercadopago.com.mx/developers/es/docs/checkout-pro/additional-content/your-integrations/test/accounts) y una [tarjeta de prueba](https://www.mercadopago.com.mx/developers/es/docs/checkout-pro/additional-content/your-integrations/test/cards). El webhook vuelve a leer el pago en la API de Mercado Pago antes de marcar el pedido; no confía en el cuerpo del aviso.
+
+## Ubicación
+
+El recolector comparte `navigator.geolocation.watchPosition` (en el APK, el plugin de geolocalización de Capacitor y los permisos de Android). El servidor reenvía el punto por los mismos eventos SSE que ya usa el mapa. El cliente ve la moto moverse y una ETA. La dirección de recolección se puede poner con **Usar mi ubicación** o moviendo el pin. Si el permiso se niega, el mapa vuelve al recorrido simulado.
 
 ## Cupones, chat y fotos
 
@@ -152,10 +201,10 @@ También puedes abrir la carpeta `android/` en Android Studio y usar Run.
 
 ## Qué falta para lanzarlo de verdad
 
-- **Pagos reales** (por ejemplo Mercado Pago o Stripe) en lugar del pago simulado, con reembolsos si el cliente no acepta el peso.
-- **Cuentas de verdad**: registro, recuperación de contraseña y sesiones firmadas. Hoy la sesión es una cookie de demostración.
-- **Base de datos** y un servidor con más de un proceso. El archivo JSON y la moto simulada viven en la memoria de un solo Node.
-- **GPS real del recolector** en lugar de la ruta simulada, con la app en segundo plano.
+- **Pagos en producción** de Mercado Pago (hoy son credenciales de prueba, o modo demo si no hay token) y reembolsos automáticos si el cliente no acepta el peso.
+- **Cuentas firmadas**: ya hay registro y aprobación, pero la sesión sigue siendo una cookie de demostración y la contraseña no está hasheada.
+- **Varios procesos**: Postgres guarda el documento, pero la moto en vivo sigue en la memoria de un solo Node. El plan gratis de Render es una instancia.
+- **GPS en segundo plano** cuando el recolector bloquea el teléfono. Con la app abierta ya se comparte la ubicación.
 - **Notificaciones push** cuando la app está cerrada (FCM en Android, Web Push con llaves VAPID en el navegador). Hoy el aviso del sistema sale si la app está abierta o, en el APK, como notificación local al recibir el evento.
 - **Apps nativas** firmadas para Play y, si hace falta, App Store. El proyecto Android ya está; iOS sería otro target de Capacitor.
 - **Operación**: varias lavanderías, zonas de cobertura, horarios, comprobantes fiscales (CFDI) y soporte.

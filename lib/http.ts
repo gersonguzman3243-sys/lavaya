@@ -1,12 +1,13 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { AppError } from "./orders";
-import { readDb } from "./store";
+import { initDb, readDb } from "./store";
 import type { User } from "./types";
 
 const COOKIE = "lavaya_session";
 
 export async function currentUser(): Promise<User | null> {
+  await initDb();
   const jar = await cookies();
   const id = jar.get(COOKIE)?.value;
   if (!id) return null;

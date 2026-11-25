@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { pingDevice } from "@/components/api";
 import type {
+  AccountStatus,
   AppNotification,
   Banner,
   Coupon,
@@ -14,18 +15,48 @@ import type {
   Role,
 } from "@/lib/types";
 
+export interface ShopPin extends LaundryPlace {
+  id: string;
+  hours: string;
+}
+
+export interface ApplicationCard {
+  id: string;
+  role: Role;
+  name: string;
+  email: string;
+  phone: string;
+  status: AccountStatus;
+  plate: string | null;
+  idPhoto: string | null;
+  liveGps: boolean;
+  shop: {
+    name: string;
+    address: string;
+    hours: string;
+    lat: number;
+    lng: number;
+    phone: string;
+    hasCustomRates: boolean;
+  } | null;
+}
+
 export interface Bootstrap {
   me: PublicUser;
   people: PublicUser[];
   orders: Order[];
   rates: Rates;
   laundry: LaundryPlace;
+  laundries: ShopPin[];
   notifications: AppNotification[];
   banners: Banner[];
   coupons: Coupon[] | null;
+  payments: { mercadoPago: boolean; publicKey: string | null };
+  applications: ApplicationCard[] | null;
 }
 
 function homeFor(role: Role) {
+  if (role === "admin") return "/admin";
   if (role === "recolector") return "/recolector";
   if (role === "lavanderia") return "/lavanderia";
   return "/cliente";
@@ -74,7 +105,14 @@ export function useLavaya(expected?: Role) {
       try {
         const message = JSON.parse(event.data) as {
           type?: string;
-          positions?: Array<{ id: string; lat: number; lng: number; progress: number }>;
+          positions?: Array<{
+            id: string;
+            lat: number;
+            lng: number;
+            progress: number;
+            etaMinutes?: number | null;
+            locationMode?: "gps" | "simulado";
+          }>;
         };
         if (message.type === "positions" && message.positions) {
           const positions = message.positions;
@@ -85,7 +123,14 @@ export function useLavaya(expected?: Role) {
               orders: current.orders.map((order) => {
                 const point = positions.find((item) => item.id === order.id);
                 if (!point) return order;
-                return { ...order, courierLat: point.lat, courierLng: point.lng, routeProgress: point.progress };
+                return {
+                  ...order,
+                  courierLat: point.lat,
+                  courierLng: point.lng,
+                  routeProgress: point.progress,
+                  etaMinutes: point.etaMinutes ?? order.etaMinutes,
+                  locationMode: point.locationMode ?? order.locationMode,
+                };
               }),
             };
           });

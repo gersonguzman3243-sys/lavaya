@@ -6,3 +6,12 @@ services:
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     branch: main
+    envVars:
+      - key: APP_URL
+        value: https://lavaya.onrender.com
+      - key: DATABASE_URL
+        sync: false
+      - key: MP_ACCESS_TOKEN
+        sync: false
+      - key: MP_PUBLIC_KEY
+        sync: false

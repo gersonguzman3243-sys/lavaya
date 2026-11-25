@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { LiveLocation } from "@/components/live-location";
 import { ChevronLeft, MessageCircle, Phone } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/components/api";
@@ -24,6 +25,24 @@ export function RecolectorApp() {
 
   if (error) return <Plain title="No cargó LavaYa" body={error} action="Reintentar" onAction={() => void reload()} />;
   if (!data || data.me.role !== "recolector") return <Plain title="Abriendo tu moto…" body="Un momento." />;
+  if (data.me.status !== "activo") {
+    return (
+      <Plain
+        title={data.me.status === "pendiente" ? "Cuenta en revisión" : "Cuenta no disponible"}
+        body={
+          data.me.status === "pendiente"
+            ? "Administración tiene que aprobar tu moto antes de que veas viajes."
+            : "Esta cuenta no puede tomar viajes. Si crees que es un error, escribe a LavaYa."
+        }
+        action="Salir"
+        onAction={() => {
+          void fetch("/api/auth/logout", { method: "POST" }).then(() => {
+            window.location.href = "/";
+          });
+        }}
+      />
+    );
+  }
 
   const me = data.me;
   const selected = data.orders.find((order) => order.id === orderId) ?? null;
@@ -51,6 +70,7 @@ export function RecolectorApp() {
 
   return (
     <Shell data={data} onOpenOrder={setOrderId}>
+      <LiveLocation enabled />
       {selected ? (
         <Trip
           order={selected}
@@ -64,7 +84,12 @@ export function RecolectorApp() {
             <p className="text-sm text-muted-foreground">Hola, {me.name.split(" ")[0]}</p>
             <h1 className="font-display text-4xl leading-none">Tus viajes</h1>
             <p className="mt-2 text-sm">
-              {me.ratingAvg.toFixed(1)} ★ · {me.ratingCount} calificaciones · moto
+              {me.ratingAvg.toFixed(1)} ★ · {me.ratingCount} calificaciones · {me.courier?.plate ?? "moto"}
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {me.courier?.liveGps
+                ? "Estás compartiendo tu ubicación en vivo."
+                : "Si niegas la ubicación, el mapa del cliente usa un recorrido estimado."}
             </p>
           </div>
           <section className="space-y-2">

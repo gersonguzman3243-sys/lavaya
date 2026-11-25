@@ -13,7 +13,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Counter, GarmentLine, PriceCard, StatusPill, countsFrom, garmentsFrom } from "@/components/widgets";
 import { Mark } from "@/components/logo";
 import { GARMENTS, serviceLabel, statusLabel } from "@/lib/catalog";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, mxn } from "@/lib/format";
+import { paymentStatusLabel } from "@/lib/payment-label";
 import { computePrice } from "@/lib/pricing";
 import type { Coupon, Order, Rates } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,24 @@ export function LavanderiaApp() {
 
   if (error) return <Plain title="No cargó el taller" body={error} action="Reintentar" onAction={() => void reload()} />;
   if (!data || data.me.role !== "lavanderia") return <Plain title="Abriendo el taller…" body="Un momento." />;
+  if (data.me.status !== "activo") {
+    return (
+      <Plain
+        title={data.me.status === "pendiente" ? "Taller en revisión" : "Taller no disponible"}
+        body={
+          data.me.status === "pendiente"
+            ? "Administración tiene que aprobar el taller antes de que te lleguen pedidos."
+            : "Esta cuenta no puede operar. Si crees que es un error, escribe a LavaYa."
+        }
+        action="Salir"
+        onAction={() => {
+          void fetch("/api/auth/logout", { method: "POST" }).then(() => {
+            window.location.href = "/";
+          });
+        }}
+      />
+    );
+  }
 
   const selected = data.orders.find((order) => order.id === orderId) ?? null;
 
@@ -105,6 +124,7 @@ function OrderList({ orders, onOpen }: { orders: Order[]; onOpen: (id: string) =
             <span className="mt-1 block">{order.customerName}</span>
             <span className="block text-sm text-muted-foreground">{serviceLabel(order.baseService)}{order.planchado ? " + planchado" : ""}</span>
             <span className="mt-2 block text-sm">{order.finalPrice ? "Peso registrado" : `Declaró ${order.estimatedKg.toFixed(1)} kg`}</span>
+            {order.finalPrice ? <span className="mt-1 block text-sm font-semibold">{paymentStatusLabel(order.paymentStatus)}</span> : null}
           </button>
         ))
       )}
@@ -171,6 +191,7 @@ function OrderDesk({ order, onBack }: { order: Order; onBack: () => void }) {
         <p className="text-xs font-bold text-muted-foreground">{order.code} · {statusLabel(order.status)}</p>
         <h2 className="font-display text-3xl leading-none">{order.customerName}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{formatDateTime(order.createdAt)}</p>
+        {order.finalPrice ? <p className="mt-2 text-sm font-semibold">{paymentStatusLabel(order.paymentStatus)} · {mxn(order.finalPrice.total)}</p> : null}
       </div>
       <div className="rounded-3xl bg-white p-4 text-sm">
         <p className="font-semibold">Declaró</p>

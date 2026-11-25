@@ -1,9 +1,11 @@
 import { canTransition, estimateKg, garmentById, statusLabel } from "./catalog";
 import { couponError, normalizeCode } from "./coupons";
-import { haversineKm } from "./geo";
+import { AppError } from "./errors";
+import { haversineKm, ROAD_FACTOR } from "./geo";
 import { computePrice } from "./pricing";
 import { persistPhoto } from "./media";
 import { routeBetween } from "./routing";
+import { effectiveRates, laundryOf, nearestLaundry, NEARBY_KM } from "./shops";
 import { commit, emit, newId, readDb } from "./store";
 import type {
   AppliedCoupon,
@@ -15,24 +17,28 @@ import type {
   OrderStatus,
   PublicUser,
   Rates,
+  PaymentStatus,
   User,
 } from "./types";
 
-export class AppError extends Error {
-  status: number;
-  constructor(message: string, status = 400) {
-    super(message);
-    this.name = "AppError";
-    this.status = status;
-  }
-}
+export { AppError };
 
 const MAX_KM = 40;
 
 export function publicUser(user: User): PublicUser {
-  const { password, ...rest } = user;
+  const { password, courier, ...rest } = user;
   void password;
-  return rest;
+  return {
+    ...rest,
+    courier: courier
+      ? {
+          plate: courier.plate,
+          available: courier.available,
+          liveGps: courier.liveGps,
+          hasIdPhoto: Boolean(courier.idPhoto),
+        }
+      : null,
+  };
 }
 
 function clean(value: string, max: number) {
@@ -153,12 +159,16 @@ function customerNotice(order: Order): { title: string; body: string; important?
   }
 }
 
-function laundryUser(db: ReturnType<typeof readDb>) {
-  return db.users.find((user) => user.role === "lavanderia");
+function laundryUser(db: ReturnType<typeof readDb>, order?: Order) {
+  if (order) {
+    const shop = laundryOf(db, order.laundryId);
+    return db.users.find((user) => user.id === shop?.ownerId) ?? null;
+  }
+  return db.users.find((user) => user.role === "lavanderia" && user.status === "activo") ?? null;
 }
 
 function notifyLaundryArrival(db: ReturnType<typeof readDb>, order: Order) {
-  const laundry = laundryUser(db);
+  const laundry = laundryUser(db, order);
   if (!laundry) return;
   notify(db, laundry.id, {
     orderId: order.id,
@@ -211,11 +221,13 @@ function assertDraft(draft: OrderDraft) {
 
 async function distanceToLaundry(lat: number, lng: number) {
   const db = readDb();
-  const straight = haversineKm({ lat, lng }, db.laundry);
-  if (straight > MAX_KM) {
-    throw new AppError("Por ahora recolectamos a menos de 40 km del taller en la Doctores.");
+  const nearest = nearestLaundry(db, lat, lng);
+  if (!nearest) throw new AppError("Todavía no hay una lavandería aprobada para recibir ropa.");
+  if (nearest.km > MAX_KM) {
+    throw new AppError("Por ahora recolectamos a menos de 40 km de una lavandería aprobada.");
   }
-  return routeBetween({ lat, lng }, db.laundry);
+  const routed = await routeBetween({ lat, lng }, nearest.shop);
+  return { ...routed, shop: nearest.shop, rates: effectiveRates(db, nearest.shop) };
 }
 
 function priceFrom(
@@ -262,7 +274,7 @@ export async function quoteOrder(draft: OrderDraft) {
   }
   const kg = estimateKg(garments);
   const price = computePrice({
-    rates: db.rates,
+    rates: routed.rates,
     km: routed.km,
     distanceMethod: routed.method,
     coupon,
@@ -271,7 +283,12 @@ export async function quoteOrder(draft: OrderDraft) {
     garments,
     kg,
   });
-  return { price, couponError: couponErrorMessage, estimatedKg: kg };
+  return {
+    price,
+    couponError: couponErrorMessage,
+    estimatedKg: kg,
+    laundry: { id: routed.shop.id, name: routed.shop.name, rates: routed.rates },
+  };
 }
 
 export async function createOrder(user: User, draft: OrderDraft) {
@@ -320,13 +337,13 @@ export async function createOrder(user: User, draft: OrderDraft) {
       receivedGarments: null,
       laundryPhotos: [],
       pricing: {
-        rates: structuredClone(db.rates),
+        rates: structuredClone(routed.rates),
         km: routed.km,
         distanceMethod: routed.method,
         coupon,
       },
       estimate: computePrice({
-        rates: db.rates,
+        rates: routed.rates,
         km: routed.km,
         distanceMethod: routed.method,
         coupon,
@@ -341,6 +358,14 @@ export async function createOrder(user: User, draft: OrderDraft) {
       courierLng: null,
       route: [],
       routeProgress: 0,
+      laundryId: routed.shop.id,
+      laundryName: routed.shop.name,
+      paymentMethod: null,
+      paymentStatus: "pendiente" as PaymentStatus,
+      preferenceId: null,
+      paymentId: null,
+      locationMode: "simulado" as const,
+      etaMinutes: null,
       rating: null,
       messages: [],
       createdAt: new Date().toISOString(),
@@ -349,7 +374,18 @@ export async function createOrder(user: User, draft: OrderDraft) {
     };
     db.orders.unshift(created);
     notifyCustomer(db, created);
-    for (const courier of db.users.filter((item) => item.role === "recolector")) {
+    const shop = laundryOf(db, created.laundryId);
+    const owner = db.users.find((item) => item.id === shop?.ownerId);
+    if (owner) {
+      notify(db, owner.id, {
+        orderId: created.id,
+        title: "Nuevo pedido para tu taller",
+        body: `${created.customerName} pidió recolección. ${created.code}.`,
+      });
+    }
+    for (const courier of db.users.filter((item) => item.role === "recolector" && item.status === "activo")) {
+      const away = haversineKm(courier, { lat: created.lat, lng: created.lng });
+      if (away > NEARBY_KM) continue;
       notify(db, courier.id, {
         orderId: created.id,
         title: "Nueva recolección",
@@ -366,6 +402,7 @@ export async function createOrder(user: User, draft: OrderDraft) {
 
 export async function acceptJob(user: User, orderId: string) {
   if (user.role !== "recolector") throw new AppError("Solo un recolector puede tomar el viaje.", 403);
+  if (user.status !== "activo") throw new AppError("Tu cuenta de recolector todavía no está aprobada.", 403);
   const snapshot = readDb();
   const current = snapshot.orders.find((item) => item.id === orderId);
   if (!current) throw new AppError("No encontramos ese pedido.", 404);
@@ -373,6 +410,9 @@ export async function acceptJob(user: User, orderId: string) {
     throw new AppError("Otro recolector ya tomó este viaje.");
   }
   const courier = snapshot.users.find((item) => item.id === user.id)!;
+  if (haversineKm(courier, { lat: current.lat, lng: current.lng }) > NEARBY_KM) {
+    throw new AppError("Este viaje queda lejos de donde estás ahora.");
+  }
   const routed = await routeBetween(
     { lat: courier.lat, lng: courier.lng },
     { lat: current.lat, lng: current.lng },
@@ -390,6 +430,11 @@ export async function acceptJob(user: User, orderId: string) {
     target.routeProgress = 0;
     target.courierLat = routed.route[0]?.[0] ?? courier.lat;
     target.courierLng = routed.route[0]?.[1] ?? courier.lng;
+    target.locationMode = courier.courier?.liveGps ? "gps" : "simulado";
+    target.etaMinutes = etaBetween(
+      { lat: target.courierLat ?? courier.lat, lng: target.courierLng ?? courier.lng },
+      { lat: target.lat, lng: target.lng },
+    );
     notifyCustomer(db, target);
     return structuredClone(target);
   });
@@ -402,7 +447,7 @@ export async function pickupJob(user: User, orderId: string) {
   const current = findOrder(snapshot, orderId);
   assertCourier(user, current);
   if (current.status !== "en_camino") throw new AppError("Este viaje no está en camino a la casa.");
-  const laundry = snapshot.laundry;
+  const laundry = shopPoint(snapshot, current);
   const routed = await routeBetween({ lat: current.lat, lng: current.lng }, laundry);
   const order = commit((db) => {
     const target = findOrder(db, orderId);
@@ -430,8 +475,10 @@ export async function dropoffJob(user: User, orderId: string) {
     setStatus(target, "en_lavanderia");
     target.route = [];
     target.routeProgress = 1;
-    target.courierLat = db.laundry.lat;
-    target.courierLng = db.laundry.lng;
+    const shop = shopPoint(db, target);
+    target.courierLat = shop.lat;
+    target.courierLng = shop.lng;
+    target.etaMinutes = 1;
     notifyCustomer(db, target);
     notifyLaundryArrival(db, target);
     return structuredClone(target);
@@ -445,15 +492,20 @@ export async function startDelivery(user: User, orderId: string) {
   const current = findOrder(snapshot, orderId);
   assertCourier(user, current);
   if (current.status !== "listo") throw new AppError("La lavandería todavía no marca la ropa como lista.");
-  const routed = await routeBetween(snapshot.laundry, { lat: current.lat, lng: current.lng });
+  const routed = await routeBetween(shopPoint(snapshot, current), { lat: current.lat, lng: current.lng });
   const order = commit((db) => {
     const target = findOrder(db, orderId);
     assertCourier(user, target);
     setStatus(target, "en_entrega");
     target.route = routed.route;
     target.routeProgress = 0;
-    target.courierLat = routed.route[0]?.[0] ?? db.laundry.lat;
-    target.courierLng = routed.route[0]?.[1] ?? db.laundry.lng;
+    const shop = shopPoint(db, target);
+    target.courierLat = routed.route[0]?.[0] ?? shop.lat;
+    target.courierLng = routed.route[0]?.[1] ?? shop.lng;
+    target.etaMinutes = etaBetween(
+      { lat: target.courierLat, lng: target.courierLng },
+      { lat: target.lat, lng: target.lng },
+    );
     notifyCustomer(db, target);
     return structuredClone(target);
   });
@@ -508,7 +560,7 @@ export function acceptPrice(user: User, orderId: string) {
     if (target.customerAccepted) throw new AppError("Este total ya estaba aceptado.");
     target.customerAccepted = true;
     target.updatedAt = new Date().toISOString();
-    const laundry = laundryUser(db);
+    const laundry = laundryUser(db, target);
     if (laundry) {
       notify(db, laundry.id, {
         orderId: target.id,
@@ -529,6 +581,7 @@ export function intakeOrder(
   input: { kg: number; garments: GarmentCount[]; photos: string[] },
 ) {
   if (user.role !== "lavanderia") throw new AppError("Solo la lavandería puede registrar la ropa.", 403);
+  if (user.status !== "activo") throw new AppError("Tu taller todavía no está aprobado.", 403);
   const kg = Math.round(Number(input.kg) * 10) / 10;
   if (!Number.isFinite(kg) || kg < 0.2 || kg > 80) {
     throw new AppError("Escribe un peso entre 0.2 y 80 kg.");
@@ -541,6 +594,9 @@ export function intakeOrder(
 
   const order = commit((db) => {
     const target = findOrder(db, orderId);
+    if (user.laundryId && target.laundryId !== user.laundryId) {
+      throw new AppError("Este pedido es de otro taller.", 403);
+    }
     const canEdit =
       target.status === "en_lavanderia" || (target.status === "pesado" && !target.customerAccepted);
     if (!canEdit) throw new AppError("Este pedido ya no se puede pesar.");
@@ -560,8 +616,12 @@ export function intakeOrder(
 
 export function advanceOrder(user: User, orderId: string, to: "lavando" | "listo") {
   if (user.role !== "lavanderia") throw new AppError("Solo la lavandería puede avanzar el lavado.", 403);
+  if (user.status !== "activo") throw new AppError("Tu taller todavía no está aprobado.", 403);
   const order = commit((db) => {
     const target = findOrder(db, orderId);
+    if (user.laundryId && target.laundryId !== user.laundryId) {
+      throw new AppError("Este pedido es de otro taller.", 403);
+    }
     if (to === "lavando" && !target.customerAccepted) {
       throw new AppError("Espera a que el cliente acepte la cantidad y el total.");
     }
@@ -671,9 +731,13 @@ function assertCourier(user: User, order: Order) {
 
 export function saveRates(user: User, rates: Rates) {
   if (user.role !== "lavanderia") throw new AppError("Solo la lavandería cambia las tarifas.", 403);
+  if (user.status !== "activo") throw new AppError("Tu taller todavía no está aprobado.", 403);
   const next = sanitizeRates(rates);
   commit((db) => {
-    db.rates = next;
+    const shop = db.laundries.find((item) => item.id === user.laundryId || item.ownerId === user.id);
+    if (shop) shop.rates = structuredClone(next);
+    const active = db.laundries.filter((item) => item.status === "activo");
+    if (!shop || active.length <= 1) db.rates = next;
   });
   emit({ type: "changed" });
   return next;
@@ -811,8 +875,79 @@ export function markNotificationsRead(user: User, ids: string[] | "all") {
 
 export function visibleOrders(user: User, orders: Order[]) {
   if (user.role === "cliente") return orders.filter((order) => order.customerId === user.id);
-  if (user.role === "lavanderia") return orders;
-  return orders.filter(
-    (order) => order.courierId === user.id || (order.status === "solicitado" && !order.courierId),
-  );
+  if (user.role === "lavanderia") return orders.filter((order) => order.laundryId === user.laundryId);
+  if (user.role === "admin") return orders;
+  if (user.role !== "recolector" || user.status !== "activo") return [];
+  return orders.filter((order) => {
+    if (order.courierId === user.id) return true;
+    if (order.status !== "solicitado" || order.courierId) return false;
+    return haversineKm(user, { lat: order.lat, lng: order.lng }) <= NEARBY_KM;
+  });
+}
+
+function shopPoint(db: ReturnType<typeof readDb>, order: Order) {
+  return laundryOf(db, order.laundryId) ?? db.laundry;
+}
+
+function etaBetween(from: { lat: number; lng: number }, to: { lat: number; lng: number }) {
+  const km = haversineKm(from, to) * ROAD_FACTOR;
+  return Math.max(1, Math.round((km / 22) * 60));
+}
+
+const MOVING: Order["status"][] = ["en_camino", "recogido", "en_entrega"];
+
+export function reportCourierLocation(user: User, input: { lat?: number; lng?: number; denied?: boolean }) {
+  if (user.role !== "recolector") throw new AppError("Solo el recolector comparte su ubicación.", 403);
+  if (user.status !== "activo") throw new AppError("Tu cuenta todavía no está aprobada.", 403);
+  if (input.denied) {
+    commit((db) => {
+      const courier = db.users.find((item) => item.id === user.id);
+      if (courier?.courier) courier.courier.liveGps = false;
+      for (const order of db.orders) {
+        if (order.courierId === user.id && MOVING.includes(order.status)) order.locationMode = "simulado";
+      }
+    });
+    emit({ type: "changed" });
+    return { liveGps: false as const };
+  }
+  const lat = Number(input.lat);
+  const lng = Number(input.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    throw new AppError("Esa ubicación no es válida.");
+  }
+  const positions: Array<{
+    id: string;
+    lat: number;
+    lng: number;
+    progress: number;
+    etaMinutes: number | null;
+    locationMode: "gps";
+  }> = [];
+  commit((db) => {
+    const courier = db.users.find((item) => item.id === user.id);
+    if (!courier) return;
+    courier.lat = lat;
+    courier.lng = lng;
+    if (courier.courier) courier.courier.liveGps = true;
+    for (const order of db.orders) {
+      if (order.courierId !== user.id || !MOVING.includes(order.status)) continue;
+      order.locationMode = "gps";
+      order.courierLat = lat;
+      order.courierLng = lng;
+      const shop = shopPoint(db, order);
+      const target = order.status === "recogido" ? shop : { lat: order.lat, lng: order.lng };
+      order.etaMinutes = etaBetween({ lat, lng }, target);
+      order.updatedAt = new Date().toISOString();
+      positions.push({
+        id: order.id,
+        lat,
+        lng,
+        progress: order.routeProgress,
+        etaMinutes: order.etaMinutes,
+        locationMode: "gps",
+      });
+    }
+  });
+  if (positions.length) emit({ type: "positions", positions });
+  return { liveGps: true as const };
 }

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { GarmentLine, StatusPill } from "@/components/widgets";
 import { customerHeadline } from "@/lib/catalog";
 import { formatDateTime, mxn } from "@/lib/format";
+import { paymentStatusLabel } from "@/lib/payment-label";
 import { Mark } from "@/components/logo";
 
 export function ClienteApp() {
@@ -54,7 +55,14 @@ export function ClienteApp() {
         />
       ) : null}
       {view === "order" && selected ? (
-        <Tracking order={selected} me={data.me} people={data.people} laundry={data.laundry} onBack={() => setView("home")} />
+        <Tracking
+          order={selected}
+          me={data.me}
+          people={data.people}
+          laundry={data.laundries.find((shop) => shop.id === selected.laundryId) ?? data.laundry}
+          mercadoPago={data.payments.mercadoPago}
+          onBack={() => setView("home")}
+        />
       ) : null}
       {view === "order" && !selected ? (
         <ScreenMessage title="Ese pedido ya no está" body="Vuelve al inicio para ver los demás." action="Inicio" onAction={() => setView("home")} />
@@ -119,6 +127,7 @@ export function ClienteApp() {
                   <span className="mt-1 block text-sm text-muted-foreground">{order.address}</span>
                   <span className="mt-2 block text-sm font-semibold">
                     {order.finalPrice ? mxn(order.finalPrice.total) : `Estimado ${mxn(order.estimate.total)}`}
+                    {order.finalPrice ? ` · ${paymentStatusLabel(order.paymentStatus)}` : ""}
                   </span>
                 </button>
               ))

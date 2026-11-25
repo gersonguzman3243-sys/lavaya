@@ -4,9 +4,10 @@ import { EventEmitter } from "events";
 import { DEFAULT_RATES, LAUNDRY } from "./catalog";
 import { haversineKm, pointAlong, ROAD_FACTOR } from "./geo";
 import { computePrice } from "./pricing";
-import type { DB, Order, OrderStatus } from "./types";
+import type { AccountStatus, CourierProfile, DB, LaundryBusiness, Order, OrderStatus, User } from "./types";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const DEMO_LAUNDRY_ID = "ldy_doctores";
 
 /** Directorio escribible. En Spaces es /home/user/data (uid 1000). */
 export function dataDir() {
@@ -25,7 +26,14 @@ export type BusEvent =
   | { type: "changed" }
   | {
       type: "positions";
-      positions: Array<{ id: string; lat: number; lng: number; progress: number }>;
+      positions: Array<{
+        id: string;
+        lat: number;
+        lng: number;
+        progress: number;
+        etaMinutes?: number | null;
+        locationMode?: "gps" | "simulado";
+      }>;
     };
 
 type Bus = EventEmitter;
@@ -105,6 +113,9 @@ export function buildSeed(): DB {
     ratingCount: 26,
     lat: 19.4128,
     lng: -99.1688,
+    status: "activo" as const,
+    laundryId: null,
+    courier: { plate: "MX-4821-A", idPhoto: null, available: true, liveGps: false },
   };
   const rosa = {
     id: "usr_rosa",
@@ -148,7 +159,7 @@ export function buildSeed(): DB {
     coupon: null,
   });
 
-  const delivered: Order = {
+  const delivered = {
     id: "ord_hist_ana",
     code: "LY-2401",
     customerId: ana.id,
@@ -231,7 +242,7 @@ export function buildSeed(): DB {
       description: "20% de bienvenida",
     },
   };
-  const openOrder: Order = {
+  const openOrder = {
     id: "ord_carlos_open",
     code: "LY-2402",
     customerId: carlos.id,
@@ -287,7 +298,7 @@ export function buildSeed(): DB {
     distanceMethod: "haversine" as const,
     coupon: null,
   };
-  const atLaundry: Order = {
+  const atLaundry = {
     id: "ord_ana_taller",
     code: "LY-2403",
     customerId: ana.id,
@@ -347,11 +358,11 @@ export function buildSeed(): DB {
     ],
   };
 
-  return {
+  return finalizeSeed({
     schemaVersion: SCHEMA_VERSION,
     seq: 2403,
-    users: [ana, carlos, luis, rosa],
-    orders: [atLaundry, openOrder, delivered],
+    users: [ana, carlos, luis, rosa] as User[],
+    orders: [atLaundry, openOrder, delivered] as unknown as Order[],
     rates,
     coupons: [
       {
@@ -417,35 +428,226 @@ export function buildSeed(): DB {
       },
     ],
     laundry: LAUNDRY,
+    laundries: [],
+  });
+}
+
+function finalizeSeed(input: {
+  schemaVersion: number;
+  seq: number;
+  users: User[];
+  orders: Order[];
+  rates: DB["rates"];
+  coupons: DB["coupons"];
+  banners: DB["banners"];
+  notifications: DB["notifications"];
+  laundry: DB["laundry"];
+  laundries: LaundryBusiness[];
+}): DB {
+  const admin: User = {
+    id: "usr_admin",
+    role: "admin",
+    name: "Administración LavaYa",
+    email: "admin@lavaya.mx",
+    password: "lavaya123",
+    phone: "55 0000 0000",
+    ratingAvg: 0,
+    ratingCount: 0,
+    lat: LAUNDRY.lat,
+    lng: LAUNDRY.lng,
+    status: "activo",
+    laundryId: null,
+    courier: null,
+  };
+  const users = input.users.some((user) => user.email === admin.email) ? input.users : [...input.users, admin];
+  return normalizeDb({ ...input, users });
+}
+
+export function normalizeDb(input: DB): DB {
+  const laundryPlace = input.laundry ?? LAUNDRY;
+  const laundries: LaundryBusiness[] = (input.laundries ?? []).map((shop) => ({
+    ...shop,
+    hours: shop.hours || "Lun a sáb · 8:00 a 20:00",
+    rates: shop.rates ?? null,
+    status: shop.status ?? "activo",
+  }));
+  if (!laundries.some((shop) => shop.id === DEMO_LAUNDRY_ID)) {
+    const rosa = input.users.find((user) => user.role === "lavanderia");
+    laundries.unshift({
+      id: DEMO_LAUNDRY_ID,
+      ownerId: rosa?.id ?? "usr_rosa",
+      name: laundryPlace.name,
+      address: laundryPlace.address,
+      lat: laundryPlace.lat,
+      lng: laundryPlace.lng,
+      phone: laundryPlace.phone,
+      hours: "Lun a sáb · 8:00 a 20:00",
+      rates: null,
+      status: "activo",
+    });
+  }
+  const users: User[] = input.users.map((user) => {
+    const status: AccountStatus = user.status ?? "activo";
+    let laundryId = user.laundryId ?? null;
+    let courier: CourierProfile | null = user.courier ?? null;
+    if (user.role === "lavanderia" && !laundryId) {
+      laundryId = laundries.find((shop) => shop.ownerId === user.id)?.id ?? DEMO_LAUNDRY_ID;
+    }
+    if (user.role === "recolector" && !courier) {
+      courier = { plate: "DEMO-00", idPhoto: null, available: true, liveGps: false };
+    }
+    if (user.role !== "recolector") courier = courier;
+    return { ...user, status, laundryId, courier: user.role === "recolector" ? courier : null };
+  });
+  const primary = laundries.find((shop) => shop.status === "activo") ?? laundries[0];
+  const orders: Order[] = input.orders.map((order) => {
+    const shop = laundries.find((item) => item.id === order.laundryId) ?? primary;
+    const done = order.status === "entregado";
+    return {
+      ...order,
+      laundryId: order.laundryId || shop.id,
+      laundryName: order.laundryName || shop.name,
+      paymentMethod: order.paymentMethod ?? (done ? "efectivo" : null),
+      paymentStatus: order.paymentStatus ?? (done ? "efectivo" : "pendiente"),
+      preferenceId: order.preferenceId ?? null,
+      paymentId: order.paymentId ?? null,
+      locationMode: order.locationMode ?? "simulado",
+      etaMinutes: order.etaMinutes ?? null,
+    };
+  });
+  return {
+    ...input,
+    schemaVersion: SCHEMA_VERSION,
+    users,
+    orders,
+    laundries,
+    laundry: {
+      name: primary.name,
+      address: primary.address,
+      lat: primary.lat,
+      lng: primary.lng,
+      phone: primary.phone,
+    },
   };
 }
 
-function ensure() {
+type PgPool = {
+  query: (text: string, values?: unknown[]) => Promise<{ rowCount: number | null; rows: Array<{ doc: DB }> }>;
+};
+
+const globalState = globalThis as typeof globalThis & {
+  __lavayaMemory?: DB;
+  __lavayaReady?: Promise<void>;
+  __lavayaPersist?: Promise<void>;
+  __lavayaPool?: PgPool;
+};
+
+function memory(): DB {
+  if (!globalState.__lavayaMemory) {
+    if (databaseUrl()) {
+      throw new Error("La base todavía no está lista.");
+    }
+    globalState.__lavayaMemory = readJsonFile();
+  }
+  return globalState.__lavayaMemory;
+}
+
+function readJsonFile(): DB {
   fs.mkdirSync(dataDir(), { recursive: true });
   fs.mkdirSync(uploadsDir(), { recursive: true });
   const file = dbFile();
   if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, JSON.stringify(buildSeed()));
-    return;
+    const seeded = buildSeed();
+    fs.writeFileSync(file, JSON.stringify(seeded));
+    return seeded;
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as DB;
-    if (parsed.schemaVersion !== SCHEMA_VERSION) {
-      fs.writeFileSync(file, JSON.stringify(buildSeed()));
-    }
+    return normalizeDb(JSON.parse(fs.readFileSync(file, "utf8")) as DB);
   } catch {
-    fs.writeFileSync(file, JSON.stringify(buildSeed()));
+    const seeded = buildSeed();
+    fs.writeFileSync(file, JSON.stringify(seeded));
+    return seeded;
   }
+}
+
+function databaseUrl() {
+  const value = process.env.DATABASE_URL?.trim();
+  return value || "";
+}
+
+async function pgPool() {
+  if (globalState.__lavayaPool) return globalState.__lavayaPool;
+  const { Pool } = await import("pg");
+  const pool = new Pool({ connectionString: databaseUrl(), max: 3 });
+  globalState.__lavayaPool = pool as unknown as PgPool;
+  return globalState.__lavayaPool;
+}
+
+/** Crea la tabla si hace falta y carga el documento. Sin DATABASE_URL usa el JSON. */
+export function initDb() {
+  if (!globalState.__lavayaReady) {
+    globalState.__lavayaReady = (async () => {
+      if (!databaseUrl()) {
+        globalState.__lavayaMemory = readJsonFile();
+        return;
+      }
+      const pool = await pgPool();
+      await pool.query(`CREATE TABLE IF NOT EXISTS lavaya_state (
+        id text PRIMARY KEY,
+        doc jsonb NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`);
+      const found = await pool.query("SELECT doc FROM lavaya_state WHERE id = $1", ["main"]);
+      if (found.rowCount && found.rows[0]) {
+        globalState.__lavayaMemory = normalizeDb(found.rows[0].doc);
+        return;
+      }
+      const seeded = buildSeed();
+      globalState.__lavayaMemory = seeded;
+      await pool.query(
+        "INSERT INTO lavaya_state (id, doc) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO NOTHING",
+        ["main", JSON.stringify(seeded)],
+      );
+    })();
+  }
+  return globalState.__lavayaReady;
+}
+
+function schedulePersist(snapshot: DB) {
+  if (!databaseUrl()) {
+    fs.mkdirSync(dataDir(), { recursive: true });
+    fs.mkdirSync(uploadsDir(), { recursive: true });
+    fs.writeFileSync(dbFile(), JSON.stringify(snapshot));
+    return;
+  }
+  const chain = globalState.__lavayaPersist ?? Promise.resolve();
+  globalState.__lavayaPersist = chain
+    .then(async () => {
+      const pool = await pgPool();
+      await pool.query(
+        `INSERT INTO lavaya_state (id, doc, updated_at)
+         VALUES ($1, $2::jsonb, now())
+         ON CONFLICT (id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()`,
+        ["main", JSON.stringify(snapshot)],
+      );
+    })
+    .catch((error) => {
+      console.error("lavaya persist", error);
+    });
 }
 
 export function readDb(): DB {
-  ensure();
-  return JSON.parse(fs.readFileSync(dbFile(), "utf8")) as DB;
+  return memory();
 }
 
 export function writeDb(db: DB) {
-  ensure();
-  fs.writeFileSync(dbFile(), JSON.stringify(db));
+  globalState.__lavayaMemory = db;
+  schedulePersist(structuredClone(db));
+}
+
+/** Espera a que el último guardado en Postgres termine. En archivo ya es síncrono. */
+export async function flushDb() {
+  if (globalState.__lavayaPersist) await globalState.__lavayaPersist;
 }
 
 /** Lectura y escritura seguidas, sin awaits en medio. */
@@ -464,10 +666,12 @@ export function resetDb() {
 }
 
 function moving(order: Order) {
+  if (order.locationMode === "gps") return false;
   return order.route.length > 1 && (order.status === "en_camino" || order.status === "recogido" || order.status === "en_entrega");
 }
 
 function tick() {
+  if (!globalState.__lavayaMemory) return;
   const db = readDb();
   const positions: Array<{ id: string; lat: number; lng: number; progress: number }> = [];
   for (const order of db.orders) {
@@ -486,7 +690,7 @@ function tick() {
 
 export function startTicker() {
   if (globalBus.__lavayaTimer) return;
-  ensure();
+  if (!globalState.__lavayaMemory && !databaseUrl()) memory();
   globalBus.__lavayaTimer = setInterval(() => {
     try {
       tick();

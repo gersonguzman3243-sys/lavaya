@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useState, type ReactNode } from "react";
+import { Signup } from "@/components/signup";
 import { Bike, Shirt, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/components/api";
@@ -21,6 +22,7 @@ export function Landing() {
   const [password, setPassword] = useState("lavaya123");
   const [busy, setBusy] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [signup, setSignup] = useState(false);
 
   async function enter(nextEmail: string, nextPassword = "lavaya123") {
     setBusy(nextEmail);
@@ -30,7 +32,13 @@ export function Landing() {
         password: nextPassword,
       });
       const path =
-        result.user.role === "recolector" ? "/recolector" : result.user.role === "lavanderia" ? "/lavanderia" : "/cliente";
+        result.user.role === "admin"
+          ? "/admin"
+          : result.user.role === "recolector"
+            ? "/recolector"
+            : result.user.role === "lavanderia"
+              ? "/lavanderia"
+              : "/cliente";
       window.location.href = path;
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "No pudimos entrar.");
@@ -84,7 +92,7 @@ export function Landing() {
           </ol>
         </div>
         <div className="rounded-[2rem] bg-ink p-5 text-white shadow-xl">
-          <p className="text-sm text-white/70">Pago simulado, sin cargos reales.</p>
+          <p className="text-sm text-white/70">Mercado Pago en pruebas, u efectivo al recibir. Sin llaves, el cobro queda en modo demo.</p>
           <p className="mt-2 font-display text-3xl leading-tight">Lavado desde $12 por kilo, más la ida y la vuelta por kilómetro.</p>
           <p className="mt-3 text-sm text-white/75">Recolección y entrega se ven aparte en el desglose. Cada una a $5 por km, y la lavandería puede cambiarlo.</p>
         </div>
@@ -134,6 +142,9 @@ export function Landing() {
           <Button type="button" variant="outline" onClick={() => setShowForm((value) => !value)}>
             Entrar con correo
           </Button>
+          <Button type="button" onClick={() => setSignup(true)}>
+            Crear cuenta
+          </Button>
           <Button type="button" variant="ghost" disabled={busy === "reset"} onClick={() => void resetDemo()}>
             Restablecer demo
           </Button>
@@ -153,7 +164,11 @@ export function Landing() {
             </Button>
           </form>
         ) : null}
+        <p className="mt-4 text-sm text-muted-foreground">
+          Administración de la demo: admin@lavaya.mx · lavaya123. Ahí se aprueban lavanderías y recolectores nuevos.
+        </p>
       </section>
+      {signup ? <Signup onClose={() => setSignup(false)} /> : null}
     </main>
   );
 }

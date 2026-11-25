@@ -1,4 +1,19 @@
-export type Role = "cliente" | "recolector" | "lavanderia";
+export type Role = "cliente" | "recolector" | "lavanderia" | "admin";
+
+export type AccountStatus = "activo" | "pendiente" | "rechazado" | "suspendido";
+
+export type PaymentMethod = "efectivo" | "mercadopago";
+
+export type PaymentStatus =
+  | "pendiente"
+  | "demo"
+  | "aprobado"
+  | "rechazado"
+  | "en_proceso"
+  | "efectivo"
+  | "reembolsado";
+
+export type LocationMode = "gps" | "simulado";
 
 export type OrderStatus =
   | "solicitado"
@@ -108,6 +123,20 @@ export interface AppNotification {
   important: boolean;
 }
 
+export interface CourierProfile {
+  plate: string;
+  idPhoto: string | null;
+  available: boolean;
+  liveGps: boolean;
+}
+
+export interface PublicCourier {
+  plate: string;
+  available: boolean;
+  liveGps: boolean;
+  hasIdPhoto: boolean;
+}
+
 export interface User {
   id: string;
   role: Role;
@@ -119,9 +148,15 @@ export interface User {
   ratingCount: number;
   lat: number;
   lng: number;
+  status: AccountStatus;
+  /** Taller de este usuario cuando el rol es lavandería. */
+  laundryId: string | null;
+  courier: CourierProfile | null;
 }
 
-export type PublicUser = Omit<User, "password">;
+export type PublicUser = Omit<User, "password" | "courier"> & {
+  courier: PublicCourier | null;
+};
 
 export interface OrderPricing {
   rates: Rates;
@@ -163,6 +198,14 @@ export interface Order {
   /** [lat, lng] */
   route: Array<[number, number]>;
   routeProgress: number;
+  laundryId: string;
+  laundryName: string;
+  paymentMethod: PaymentMethod | null;
+  paymentStatus: PaymentStatus;
+  preferenceId: string | null;
+  paymentId: string | null;
+  locationMode: LocationMode;
+  etaMinutes: number | null;
   rating: Rating | null;
   messages: ChatMessage[];
   createdAt: string;
@@ -178,6 +221,15 @@ export interface LaundryPlace {
   phone: string;
 }
 
+export interface LaundryBusiness extends LaundryPlace {
+  id: string;
+  ownerId: string;
+  hours: string;
+  /** null = tarifas de la plataforma (12/kg y 5 MXN/km). */
+  rates: Rates | null;
+  status: AccountStatus;
+}
+
 export interface DB {
   schemaVersion: number;
   seq: number;
@@ -188,4 +240,5 @@ export interface DB {
   banners: Banner[];
   notifications: AppNotification[];
   laundry: LaundryPlace;
+  laundries: LaundryBusiness[];
 }

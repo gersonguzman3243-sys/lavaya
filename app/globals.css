@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+:root {
+  --background: #e7efe9;
+  --foreground: #14241e;
+  --card: #ffffff;
+  --primary: #0e8f6e;
+  --primary-foreground: #ffffff;
+  --secondary: #e7f3ec;
+  --muted: #e6eee8;
+  --muted-foreground: #5c6f67;
+  --accent: #ff7a1a;
+  --accent-foreground: #1c1006;
+  --border: #d5e3db;
+  --ring: #0e8f6e;
+  --danger: #c83e3e;
+  --ink: #14241e;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --color-danger: var(--danger);
+  --color-ink: #14241e;
+  --color-mango: #ff7a1a;
+  --color-leaf: #0e8f6e;
+  --color-foam: #f4f7f2;
+  --color-cream: #fff6ee;
+  --font-sans: var(--font-outfit), sans-serif;
+  --font-display: var(--font-fraunces), serif;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  min-height: 100dvh;
+  background:
+    radial-gradient(900px 420px at -10% -20%, rgba(14, 143, 110, 0.22), transparent 55%),
+    radial-gradient(680px 380px at 110% -10%, rgba(255, 122, 26, 0.2), transparent 48%),
+    #e7efe9;
+  color: var(--foreground);
+  font-family: var(--font-outfit), sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-fraunces), serif;
+  font-optical-sizing: auto;
+}
+
+.lavaya-divicon {
+  background: transparent;
+  border: none;
+}
+
+.lavaya-pin {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border: 3px solid white;
+  border-radius: 999px;
+  font-size: 20px;
+  box-shadow: 0 10px 24px rgba(16, 40, 32, 0.28);
+}
+
+.lavaya-pin.home {
+  background: #0e8f6e;
+}
+
+.lavaya-pin.shop {
+  background: #143f36;
+}
+
+.lavaya-pin.moto {
+  background: #ff7a1a;
+  animation: lavaya-bob 1.4s ease-in-out infinite;
+}
+
+.lavaya-pin.drop {
+  background: #ffffff;
+}
+
+@keyframes lavaya-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+.leaflet-container {
+  z-index: 0 !important;
+  font-family: inherit;
+  background: #d7ebe3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lavaya-pin.moto {
+    animation: none;
+  }
+}

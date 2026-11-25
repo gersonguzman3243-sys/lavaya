@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="es-MX">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0E8F6E" />
+    <title>LavaYa</title>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        font-family: "Segoe UI", sans-serif;
+        color: #14241e;
+        background:
+          radial-gradient(600px 280px at 0 0, rgba(255,255,255,.18), transparent 60%),
+          #0e8f6e;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      main {
+        width: min(440px, 100%);
+        background: #f4f7f2;
+        border-radius: 28px;
+        padding: 24px 20px 20px;
+        box-shadow: 0 24px 60px rgba(0,0,0,.18);
+      }
+      .mark {
+        width: 72px;
+        height: 72px;
+        border-radius: 20px;
+        background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 10c7.2 9.2 16 18.2 16 28.2A16 16 0 1 1 16 38.2C16 28.2 24.8 19.2 32 10z' fill='%230e8f6e'/%3E%3Ccircle cx='43' cy='22' r='4' fill='%23ff7a1a'/%3E%3C/svg%3E") center 12px / 46px no-repeat;
+      }
+      h1 { font-family: Georgia, serif; font-size: 40px; margin: 14px 0 4px; }
+      p { margin: 0 0 14px; line-height: 1.4; }
+      label { display: block; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+      input {
+        width: 100%;
+        height: 52px;
+        border-radius: 16px;
+        border: 1px solid #d5e3db;
+        padding: 0 14px;
+        font-size: 16px;
+      }
+      button {
+        width: 100%;
+        height: 56px;
+        margin-top: 12px;
+        border: 0;
+        border-radius: 16px;
+        background: #0e8f6e;
+        color: white;
+        font-size: 17px;
+        font-weight: 700;
+      }
+      button.ghost { background: transparent; color: #0e8f6e; height: 44px; }
+      .help { color: #5c6f67; font-size: 13px; }
+      .error { color: #9d2c2c; font-size: 14px; min-height: 1.2em; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true"></div>
+      <h1>LavaYa</h1>
+      <p>Tu ropa, recogida en moto. Esta app instalada abre el servidor donde corre LavaYa.</p>
+      <label for="url">Dirección del servidor</label>
+      <input id="url" inputmode="url" autocomplete="url" placeholder="https://lavaya.onrender.com" />
+      <p class="help">La dirección pública ya viene escrita: <strong>https://lavaya.onrender.com</strong>. Puedes cambiarla. En el emulador, tu computadora es <strong>http://10.0.2.2:43123</strong>. En un teléfono de la misma red Wi-Fi, usa la IP de tu computadora. No uses localhost: el teléfono no ve tu computadora con esa palabra. HTTPS no necesita tráfico sin cifrar.</p>
+      <p id="error" class="error"></p>
+      <button id="go" type="button">Entrar a LavaYa</button>
+      <button id="change" class="ghost" type="button">Cambiar dirección</button>
+    </main>
+    <script>
+      const KEY = "lavaya_server";
+      const DEFAULT_URL = "https://lavaya.onrender.com";
+      const input = document.getElementById("url");
+      const error = document.getElementById("error");
+      const params = new URLSearchParams(location.search);
+      const saved = localStorage.getItem(KEY) || DEFAULT_URL;
+      input.value = saved;
+      let timer = null;
+
+      function valid(value) {
+        try {
+          const url = new URL(value);
+          return url.protocol === "http:" || url.protocol === "https:";
+        } catch {
+          return false;
+        }
+      }
+
+      function enter() {
+        const value = input.value.trim().replace(/\/$/, "");
+        if (!valid(value)) {
+          error.textContent = "Escribe una dirección que empiece con http:// o https://";
+          return;
+        }
+        localStorage.setItem(KEY, value);
+        location.href = value;
+      }
+
+      document.getElementById("go").addEventListener("click", () => {
+        if (timer) clearInterval(timer);
+        enter();
+      });
+      document.getElementById("change").addEventListener("click", () => {
+        if (timer) clearInterval(timer);
+        error.textContent = "";
+      });
+
+      if (saved && !params.has("reconfig")) {
+        let left = 3;
+        error.textContent = "Entrando a " + saved + " en " + left + "… Toca Cambiar si no es la correcta.";
+        timer = setInterval(() => {
+          left -= 1;
+          if (left <= 0) {
+            clearInterval(timer);
+            location.href = saved;
+          } else {
+            error.textContent = "Entrando a " + saved + " en " + left + "… Toca Cambiar si no es la correcta.";
+          }
+        }, 1000);
+      }
+    </script>
+  </body>
+</html>

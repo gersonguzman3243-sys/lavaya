@@ -1,0 +1,112 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { pingDevice } from "@/components/api";
+import type {
+  AppNotification,
+  Banner,
+  Coupon,
+  LaundryPlace,
+  Order,
+  PublicUser,
+  Rates,
+  Role,
+} from "@/lib/types";
+
+export interface Bootstrap {
+  me: PublicUser;
+  people: PublicUser[];
+  orders: Order[];
+  rates: Rates;
+  laundry: LaundryPlace;
+  notifications: AppNotification[];
+  banners: Banner[];
+  coupons: Coupon[] | null;
+}
+
+function homeFor(role: Role) {
+  if (role === "recolector") return "/recolector";
+  if (role === "lavanderia") return "/lavanderia";
+  return "/cliente";
+}
+
+export function useLavaya(expected?: Role) {
+  const [data, setData] = useState<Bootstrap | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const seen = useRef(new Set<string>());
+  const armed = useRef(false);
+
+  const load = useCallback(async () => {
+    const response = await fetch("/api/bootstrap", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.href = "/";
+      return;
+    }
+    if (!response.ok) {
+      setError("No pudimos cargar LavaYa. Revisa tu conexión.");
+      return;
+    }
+    setData((await response.json()) as Bootstrap);
+    setError(null);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!data) return;
+    for (const note of data.notifications) {
+      if (seen.current.has(note.id)) continue;
+      if (armed.current && !note.read) {
+        toast(note.title, { description: note.body });
+        void pingDevice(note.title, note.body);
+      }
+      seen.current.add(note.id);
+    }
+    armed.current = true;
+  }, [data]);
+
+  useEffect(() => {
+    const source = new EventSource("/api/events");
+    source.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data) as {
+          type?: string;
+          positions?: Array<{ id: string; lat: number; lng: number; progress: number }>;
+        };
+        if (message.type === "positions" && message.positions) {
+          const positions = message.positions;
+          setData((current) => {
+            if (!current) return current;
+            return {
+              ...current,
+              orders: current.orders.map((order) => {
+                const point = positions.find((item) => item.id === order.id);
+                if (!point) return order;
+                return { ...order, courierLat: point.lat, courierLng: point.lng, routeProgress: point.progress };
+              }),
+            };
+          });
+          return;
+        }
+        if (message.type === "changed") void load();
+      } catch {
+        /* evento vacío */
+      }
+    };
+    const poll = window.setInterval(() => void load(), 10000);
+    return () => {
+      source.close();
+      window.clearInterval(poll);
+    };
+  }, [load]);
+
+  useEffect(() => {
+    if (!data || !expected || data.me.role === expected) return;
+    window.location.href = homeFor(data.me.role);
+  }, [data, expected]);
+
+  return { data, error, reload: load };
+}
